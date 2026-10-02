@@ -1,0 +1,893 @@
+#!/usr/bin/env bash
+
+# ============================================================
+#                 ALPHACODES VPS MANAGER
+# ============================================================
+# Pterodactyl • Wings • Nginx • MariaDB • Proxmox • Docker
+# ============================================================
+
+set -u
+
+# ============================================================
+# COLORS
+# ============================================================
+
+RESET='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+
+CYAN='\033[1;36m'
+BLUE='\033[1;34m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+RED='\033[1;31m'
+MAGENTA='\033[1;35m'
+WHITE='\033[1;37m'
+
+# ============================================================
+# ROOT CHECK
+# ============================================================
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo
+    echo -e "${RED}${BOLD}✗ This script must be run as root.${RESET}"
+    echo
+    echo "Run:"
+    echo "  sudo bash $0"
+    echo
+    exit 1
+fi
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+pause() {
+    echo
+    read -rp "Press Enter to continue..."
+}
+
+separator() {
+    echo -e "${CYAN}──────────────────────────────────────────────────────────────${RESET}"
+}
+
+success() {
+    echo -e "${GREEN}${BOLD}✓ $*${RESET}"
+}
+
+error_msg() {
+    echo -e "${RED}${BOLD}✗ $*${RESET}"
+}
+
+info() {
+    echo -e "${CYAN}➜ $*${RESET}"
+}
+
+warning() {
+    echo -e "${YELLOW}⚠ $*${RESET}"
+}
+
+# ============================================================
+# BANNER
+# ============================================================
+
+banner() {
+    clear
+
+    echo -e "${CYAN}${BOLD}"
+
+    cat <<'EOF'
+
+
+             ALPHA CODERZ
+
+
+EOF
+
+    echo -e "${RESET}"
+
+    echo -e "${MAGENTA}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║                 ALPHACODES • VPS MANAGER                    ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║ Pterodactyl • Wings • Nginx • MariaDB • Proxmox • Docker   ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo -e "${RESET}"
+
+    echo
+    echo -e "${GREEN}${BOLD}  ● SYSTEM ONLINE${RESET}"
+    echo -e "${DIM}  ────────────────────────────────────────────────────────────${RESET}"
+    echo
+}
+
+# ============================================================
+# PTERODACTYL INSTALL
+# ============================================================
+
+pterodactyl_install() {
+
+    banner
+
+    echo -e "${CYAN}${BOLD}PTERODACTYL INSTALL${RESET}"
+    separator
+    echo
+
+    info "Updating package lists..."
+    apt update
+
+    echo
+    info "Installing dependencies..."
+
+    apt install -y \
+        curl \
+        wget \
+        git \
+        unzip \
+        tar \
+        ca-certificates \
+        gnupg \
+        nginx \
+        mariadb-server \
+        mariadb-client \
+        redis-server
+
+    echo
+    success "Base dependencies installed."
+
+    echo
+    info "Installing PHP 8.5 packages..."
+
+    apt install -y \
+        php8.5-fpm \
+        php8.5-cli \
+        php8.5-mysql \
+        php8.5-gd \
+        php8.5-mbstring \
+        php8.5-bcmath \
+        php8.5-xml \
+        php8.5-curl \
+        php8.5-zip \
+        php8.5-intl \
+        php8.5-tokenizer \
+        php8.5-fileinfo
+
+    echo
+    success "PHP packages installed."
+
+    # PHP runtime
+    mkdir -p /run/php
+
+    # PHP-FPM
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable php8.5-fpm 2>/dev/null || true
+        systemctl restart php8.5-fpm 2>/dev/null || true
+    fi
+
+    if ! pgrep -x php-fpm8.5 >/dev/null 2>&1; then
+        php-fpm8.5 -D 2>/dev/null || true
+    fi
+
+    # MariaDB
+    mkdir -p /run/mysqld
+    chown mysql:mysql /run/mysqld 2>/dev/null || true
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable mariadb 2>/dev/null || true
+        systemctl restart mariadb 2>/dev/null || true
+    else
+        if ! pgrep -x mariadbd >/dev/null 2>&1; then
+            mariadbd --user=mysql --datadir=/var/lib/mysql &
+        fi
+    fi
+
+    # Redis
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable redis-server 2>/dev/null || true
+        systemctl restart redis-server 2>/dev/null || true
+    fi
+
+    echo
+    success "PHP-FPM, MariaDB and Redis prepared."
+
+    echo
+    info "Launching Pterodactyl installer..."
+    echo
+
+    bash <(curl -s https://pterodactyl-installer.se)
+
+    echo
+    success "Pterodactyl installer finished."
+
+    pause
+}
+
+# ============================================================
+# WINGS INSTALL & SETUP
+# ============================================================
+
+wings_install() {
+
+    banner
+
+    echo -e "${CYAN}${BOLD}WINGS INSTALL & SETUP${RESET}"
+    separator
+    echo
+
+    info "Updating packages..."
+    apt update
+
+    echo
+    info "Installing dependencies..."
+
+    apt install -y \
+        curl \
+        wget \
+        ca-certificates \
+        gnupg \
+        apt-transport-https
+
+    echo
+    info "Checking Docker..."
+
+    if command -v docker >/dev/null 2>&1; then
+        success "Docker is already installed."
+    else
+        info "Installing Docker..."
+        apt install -y docker.io
+        success "Docker installed."
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable docker 2>/dev/null || true
+        systemctl start docker 2>/dev/null || true
+    fi
+
+    echo
+    info "Preparing Pterodactyl directory..."
+
+    mkdir -p /etc/pterodactyl
+
+    # --------------------------------------------------------
+    # Architecture
+    # --------------------------------------------------------
+
+    ARCH="$(uname -m)"
+
+    case "$ARCH" in
+        x86_64)
+            WINGS_ARCH="amd64"
+            ;;
+        aarch64|arm64)
+            WINGS_ARCH="arm64"
+            ;;
+        *)
+            error_msg "Unsupported architecture: $ARCH"
+            pause
+            return
+            ;;
+    esac
+
+    WINGS_VERSION="1.13.3"
+
+    echo
+    info "Downloading Wings ${WINGS_VERSION}..."
+
+    curl -fL \
+        -o /usr/local/bin/wings \
+        "https://github.com/pterodactyl/wings/releases/download/v${WINGS_VERSION}/wings_linux_${WINGS_ARCH}"
+
+    chmod +x /usr/local/bin/wings
+
+    echo
+    success "Wings binary installed."
+
+    echo
+    info "Creating systemd service..."
+
+    cat > /etc/systemd/system/wings.service <<'EOF'
+[Unit]
+Description=Pterodactyl Wings Daemon
+Documentation=https://pterodactyl.io/wings
+After=docker.service
+Requires=docker.service
+
+[Service]
+User=root
+WorkingDirectory=/etc/pterodactyl
+LimitNOFILE=4096
+ExecStart=/usr/local/bin/wings
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable wings
+
+    echo
+    success "Wings systemd service created."
+
+    echo
+    echo -e "${YELLOW}${BOLD}IMPORTANT${RESET}"
+    echo
+    echo "Your Pterodactyl Panel generates:"
+    echo
+    echo "  /etc/pterodactyl/config.yml"
+    echo
+    echo "Wings can only start after that configuration exists."
+    echo
+
+    if [ -f /etc/pterodactyl/config.yml ]; then
+
+        info "config.yml found."
+
+        systemctl restart wings
+
+        sleep 2
+
+        if systemctl is-active --quiet wings; then
+            success "Wings is running in the background."
+        else
+            warning "Wings failed to start."
+            echo
+            echo "Recent logs:"
+            journalctl -u wings --no-pager -n 30
+        fi
+
+    else
+
+        warning "config.yml not found."
+        echo
+        echo "After creating the node in Pterodactyl Panel, put the"
+        echo "generated configuration at:"
+        echo
+        echo "  /etc/pterodactyl/config.yml"
+        echo
+        echo "Then run:"
+        echo
+        echo "  systemctl enable --now wings"
+    fi
+
+    pause
+}
+
+# ============================================================
+# FIX 502
+# ============================================================
+
+fix_502() {
+
+    banner
+
+    echo -e "${CYAN}${BOLD}PTERODACTYL 502 FIX${RESET}"
+    separator
+    echo
+
+    info "[1/12] Updating packages..."
+    apt update
+
+    echo
+    info "[2/12] Installing Nginx/PHP packages..."
+
+    apt install -y \
+        nginx \
+        php8.5-fpm \
+        php8.5-cli \
+        php8.5-mysql \
+        php8.5-gd \
+        php8.5-mbstring \
+        php8.5-bcmath \
+        php8.5-xml \
+        php8.5-curl \
+        php8.5-zip \
+        php8.5-intl \
+        php8.5-tokenizer \
+        php8.5-fileinfo \
+        unzip
+
+    echo
+    info "[3/12] Creating PHP runtime directory..."
+
+    mkdir -p /run/php
+
+    echo
+    info "[4/12] Starting PHP-FPM..."
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable php8.5-fpm 2>/dev/null || true
+        systemctl restart php8.5-fpm 2>/dev/null || true
+    fi
+
+    if ! pgrep -x php-fpm8.5 >/dev/null 2>&1; then
+        php-fpm8.5 -D 2>/dev/null || true
+    fi
+
+    echo
+    info "[5/12] Fixing PHP 8.3 socket references..."
+
+    PTERO_NGINX="/etc/nginx/sites-available/pterodactyl.conf"
+
+    if [ -f "$PTERO_NGINX" ]; then
+
+        sed -i \
+            's/php8\.3-fpm\.sock/php8.5-fpm.sock/g' \
+            "$PTERO_NGINX"
+
+        success "PHP socket changed to PHP 8.5."
+
+    else
+
+        warning "Pterodactyl Nginx configuration not found:"
+        echo "  $PTERO_NGINX"
+
+    fi
+
+    echo
+    info "[6/12] Enabling Pterodactyl Nginx configuration..."
+
+    if [ -f "$PTERO_NGINX" ]; then
+
+        ln -sf \
+            "$PTERO_NGINX" \
+            /etc/nginx/sites-enabled/pterodactyl.conf
+
+        success "Pterodactyl Nginx site enabled."
+
+    fi
+
+    echo
+    info "[7/12] Removing default Nginx site..."
+
+    rm -f /etc/nginx/sites-enabled/default
+
+    echo
+    info "[8/12] Installing MariaDB..."
+
+    apt install -y \
+        mariadb-server \
+        mariadb-client
+
+    mkdir -p /run/mysqld
+    chown mysql:mysql /run/mysqld 2>/dev/null || true
+
+    echo
+    info "[9/12] Starting MariaDB..."
+
+    if command -v systemctl >/dev/null 2>&1; then
+
+        systemctl enable mariadb 2>/dev/null || true
+        systemctl restart mariadb 2>/dev/null || true
+
+    else
+
+        if ! pgrep -x mariadbd >/dev/null 2>&1; then
+            mariadbd --user=mysql --datadir=/var/lib/mysql &
+        fi
+
+    fi
+
+    echo
+    info "[10/12] Testing Nginx..."
+
+    if nginx -t; then
+        success "Nginx configuration is valid."
+    else
+        error_msg "Nginx configuration contains errors."
+    fi
+
+    echo
+    info "[11/12] Restarting Nginx..."
+
+    if command -v systemctl >/dev/null 2>&1; then
+
+        systemctl enable nginx 2>/dev/null || true
+        systemctl restart nginx 2>/dev/null || true
+
+    else
+
+        nginx 2>/dev/null || true
+        nginx -s reload 2>/dev/null || true
+
+    fi
+
+    echo
+    info "[12/12] Checking services..."
+
+    echo
+    echo -e "${MAGENTA}${BOLD}PHP-FPM${RESET}"
+    pgrep -a php-fpm || echo "Not running"
+
+    echo
+    echo -e "${MAGENTA}${BOLD}NGINX${RESET}"
+    pgrep -a nginx || echo "Not running"
+
+    echo
+    echo -e "${MAGENTA}${BOLD}MARIADB${RESET}"
+    pgrep -a mariadbd || echo "Not running"
+
+    echo
+    echo -e "${MAGENTA}${BOLD}PHP SOCKETS${RESET}"
+    ls -lah /run/php/ 2>/dev/null || true
+
+    echo
+    echo -e "${MAGENTA}${BOLD}FINAL NGINX TEST${RESET}"
+
+    nginx -t
+
+    echo
+    success "502 repair process completed."
+
+    echo
+    echo -e "${YELLOW}${BOLD}If you still get 502:${RESET}"
+    echo
+    echo "tail -50 /var/log/nginx/error.log"
+    echo
+    echo "Main socket fix:"
+    echo
+    echo "sed -i 's/php8\\.3-fpm\\.sock/php8.5-fpm.sock/g' /etc/nginx/sites-available/pterodactyl.conf"
+    echo
+    echo "Then:"
+    echo
+    echo "nginx -t && nginx -s reload"
+
+    pause
+}
+
+# ============================================================
+# PROXMOX INSTALL
+# ============================================================
+
+install_proxmox() {
+
+    banner
+
+    echo -e "${CYAN}${BOLD}PROXMOX VE INSTALLER${RESET}"
+    separator
+    echo
+
+    echo -e "${YELLOW}${BOLD}WARNING${RESET}"
+    echo
+    echo "This installs Proxmox VE packages on the current system."
+    echo
+    echo "A proper Proxmox installation normally requires a supported"
+    echo "Debian environment with appropriate kernel and hardware access."
+    echo
+    echo "Installing Proxmox inside an LXC/container/VPS can fail because"
+    echo "of missing virtualization, kernel, filesystem, or systemd access."
+    echo
+
+    read -rp "Continue? [y/N]: " CONFIRM
+
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo
+        warning "Installation cancelled."
+        sleep 1
+        return
+    fi
+
+    echo
+    info "[1/8] Updating system..."
+
+    apt update
+
+    echo
+    info "[2/8] Installing prerequisites..."
+
+    apt install -y \
+        wget \
+        gnupg2 \
+        ca-certificates
+
+    echo
+    info "[3/8] Setting hostname..."
+
+    hostnamectl set-hostname pve 2>/dev/null || \
+        hostname pve 2>/dev/null || true
+
+    echo
+    info "[4/8] Configuring /etc/hosts..."
+
+    IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+
+    if [ -n "$IP" ]; then
+
+        sed -i '/[[:space:]]pve$/d' /etc/hosts
+
+        echo "$IP pve.localdomain pve" >> /etc/hosts
+
+        success "Host entry created:"
+        echo "  $IP pve.localdomain pve"
+
+    else
+
+        warning "Could not determine primary IPv4 address."
+
+    fi
+
+    echo
+    info "[5/8] Installing Proxmox repository key..."
+
+    mkdir -p /usr/share/keyrings
+
+    wget -qO \
+        /usr/share/keyrings/proxmox-archive-keyring.gpg \
+        https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg
+
+    echo
+    info "[6/8] Creating Proxmox repository..."
+
+    cat > /etc/apt/sources.list.d/pve-install-repo.list <<'EOF'
+deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription
+EOF
+
+    echo
+    info "[7/8] Installing Proxmox VE..."
+
+    apt update
+
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+        proxmox-default-kernel \
+        proxmox-ve \
+        postfix \
+        open-iscsi \
+        chrony
+
+    echo
+    info "[8/8] Restarting Proxmox services..."
+
+    if [ -n "$IP" ]; then
+
+        sed -i '/[[:space:]]pve$/d' /etc/hosts
+
+        echo "$IP pve" >> /etc/hosts
+
+    fi
+
+    getent hosts pve || true
+
+    if command -v systemctl >/dev/null 2>&1; then
+
+        systemctl restart pve-cluster 2>/dev/null || true
+        systemctl restart pvedaemon 2>/dev/null || true
+        systemctl restart pvestatd 2>/dev/null || true
+        systemctl restart pveproxy 2>/dev/null || true
+
+    fi
+
+    echo
+    success "Proxmox installation process completed."
+
+    echo
+    echo -e "${MAGENTA}${BOLD}PROXMOX SERVICES${RESET}"
+    echo
+
+    if command -v systemctl >/dev/null 2>&1; then
+
+        systemctl --no-pager --full status \
+            pve-cluster \
+            pvedaemon \
+            pvestatd \
+            pveproxy || true
+
+    else
+
+        warning "systemd is not available."
+
+    fi
+
+    echo
+    warning "A reboot may be required after installing the Proxmox kernel."
+    echo
+
+    read -rp "Reboot now? [y/N]: " REBOOT
+
+    if [[ "$REBOOT" =~ ^[Yy]$ ]]; then
+        reboot
+    fi
+
+    pause
+}
+
+# ============================================================
+# SYSTEM STATUS
+# ============================================================
+
+status_check() {
+
+    banner
+
+    echo -e "${CYAN}${BOLD}SYSTEM STATUS${RESET}"
+    separator
+    echo
+
+    echo -e "${WHITE}${BOLD}Hostname:${RESET}"
+    hostname
+
+    echo
+    echo -e "${WHITE}${BOLD}IP Address:${RESET}"
+    hostname -I
+
+    echo
+    echo -e "${WHITE}${BOLD}Kernel:${RESET}"
+    uname -r
+
+    echo
+    echo -e "${WHITE}${BOLD}Architecture:${RESET}"
+    uname -m
+
+    echo
+    echo -e "${WHITE}${BOLD}PHP-FPM:${RESET}"
+
+    if pgrep -x php-fpm8.5 >/dev/null 2>&1; then
+        success "PHP-FPM 8.5 is running."
+    else
+        error_msg "PHP-FPM 8.5 is not running."
+    fi
+
+    echo
+    echo -e "${WHITE}${BOLD}Nginx:${RESET}"
+
+    if pgrep -x nginx >/dev/null 2>&1; then
+        success "Nginx is running."
+    else
+        error_msg "Nginx is not running."
+    fi
+
+    echo
+    echo -e "${WHITE}${BOLD}MariaDB:${RESET}"
+
+    if pgrep -x mariadbd >/dev/null 2>&1; then
+        success "MariaDB is running."
+    else
+        error_msg "MariaDB is not running."
+    fi
+
+    echo
+    echo -e "${WHITE}${BOLD}Docker:${RESET}"
+
+    if command -v docker >/dev/null 2>&1; then
+
+        echo "Version:"
+        docker --version
+
+        if docker info >/dev/null 2>&1; then
+            success "Docker daemon is running."
+        else
+            error_msg "Docker daemon is not running."
+        fi
+
+    else
+
+        warning "Docker is not installed."
+
+    fi
+
+    echo
+    echo -e "${WHITE}${BOLD}Wings:${RESET}"
+
+    if command -v wings >/dev/null 2>&1; then
+
+        wings --version || true
+
+        if command -v systemctl >/dev/null 2>&1; then
+
+            if systemctl is-active --quiet wings; then
+                success "Wings is running."
+            else
+                warning "Wings is installed but not running."
+            fi
+
+        fi
+
+    else
+
+        warning "Wings is not installed."
+
+    fi
+
+    echo
+    echo -e "${WHITE}${BOLD}PHP Sockets:${RESET}"
+    ls -lah /run/php/ 2>/dev/null || true
+
+    echo
+    echo -e "${WHITE}${BOLD}Nginx Configuration:${RESET}"
+    nginx -t 2>&1 || true
+
+    echo
+    echo -e "${WHITE}${BOLD}Docker Containers:${RESET}"
+
+    if command -v docker >/dev/null 2>&1; then
+        docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+    fi
+
+    pause
+}
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+while true; do
+
+    banner
+
+    echo -e "${CYAN}${BOLD}"
+    echo "╭────────────────────────────────────────────────────────────╮"
+    echo "│                    ALPHACODERZ TOOLS                        │"
+    echo "╰────────────────────────────────────────────────────────────╯"
+    echo -e "${RESET}"
+
+    echo -e "  ${GREEN}${BOLD}[1]${RESET}  ${WHITE}Pterodactyl Install${RESET}"
+    echo -e "       ${DIM}Install Panel dependencies and installer${RESET}"
+    echo
+
+    echo -e "  ${GREEN}${BOLD}[2]${RESET}  ${WHITE}Wings Install & Setup${RESET}"
+    echo -e "       ${DIM}Install Docker and Pterodactyl Wings${RESET}"
+    echo
+
+    echo -e "  ${YELLOW}${BOLD}[3]${RESET}  ${WHITE}Fix 502${RESET}"
+    echo -e "       ${DIM}Repair Nginx + PHP-FPM + MariaDB${RESET}"
+    echo
+
+    echo -e "  ${MAGENTA}${BOLD}[4]${RESET}  ${WHITE}Install Proxmox${RESET}"
+    echo -e "       ${DIM}Install Proxmox VE packages${RESET}"
+    echo
+
+    echo -e "  ${BLUE}${BOLD}[5]${RESET}  ${WHITE}System Status${RESET}"
+    echo -e "       ${DIM}Check VPS services and configuration${RESET}"
+    echo
+
+    echo -e "  ${RED}${BOLD}[0]${RESET}  ${WHITE}Exit${RESET}"
+    echo
+
+    separator
+
+    echo -ne "${BOLD}${WHITE}  BilluCodes@$(hostname) ${CYAN}❯ ${RESET}"
+    read -r OPTION
+
+    case "$OPTION" in
+
+        1)
+            pterodactyl_install
+            ;;
+
+        2)
+            wings_install
+            ;;
+
+        3)
+            fix_502
+            ;;
+
+        4)
+            install_proxmox
+            ;;
+
+        5)
+            status_check
+            ;;
+
+        0)
+            clear
+            echo
+            echo -e "${CYAN}${BOLD}"
+            echo "  ╔══════════════════════════════════════════╗"
+            echo "  ║       ALPHACODERZ VPS MANAGER            ║"
+            echo "  ║              Goodbye!                   ║"
+            echo "  ╚══════════════════════════════════════════╝"
+            echo -e "${RESET}"
+            echo
+            exit 0
+            ;;
+
+        *)
+            echo
+            error_msg "Invalid option."
+            sleep 1
+            ;;
+
+    esac
+
+done
